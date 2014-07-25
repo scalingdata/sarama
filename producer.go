@@ -2,6 +2,10 @@ package sarama
 
 import "time"
 
+func forceFlushThreshold() int {
+	return int(MaxRequestSize - (10 * 1024))
+}
+
 // ProducerConfig is used to pass multiple configuration options to NewProducer.
 type ProducerConfig struct {
 	Partitioner    Partitioner      // Chooses the partition to send messages to (defaults to random).
@@ -10,6 +14,7 @@ type ProducerConfig struct {
 	Compression    CompressionCodec // The type of compression to use on messages (defaults to no compression).
 	FlushMsgCount  int              // The number of messages needed to trigger a flush.
 	FlushFrequency time.Duration    // If this amount of time elapses without a flush, one will be queued.
+	FlushByteCount int              // If this many bytes of messages are accumulated, a flush will be triggered.
 	AckSuccesses   bool             // If enabled, successfully delivered messages will also be returned on the Errors channel, with a nil Err field
 }
 
@@ -32,6 +37,20 @@ func (config *ProducerConfig) Validate() error {
 		return ConfigurationError("Invalid Timeout")
 	} else if config.Timeout%time.Millisecond != 0 {
 		Logger.Println("ProducerConfig.Timeout only supports millisecond resolution; nanoseconds will be truncated.")
+	}
+
+	if config.FlushMsgCount < 0 {
+		return ConfigurationError("Invalid FlushMsgCount")
+	}
+
+	if config.FlushByteCount < 0 {
+		return ConfigurationError("Invalid FlushByteCount")
+	} else if config.FlushByteCount >= forceFlushThreshold() {
+		Logger.Println("ProducerConfig.FlushByteCount too close to MaxRequestSize; it will be ignored.")
+	}
+
+	if config.FlushFrequency < 0 {
+		return ConfigurationError("Invalid FlushFrequency")
 	}
 
 	if config.Partitioner == nil {
@@ -289,8 +308,6 @@ func (p *Producer) brokerDispatcher() {
 
 // one per broker
 func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) {
-	buffer := make([]*MessageToSend, 0)
-
 	var ticker *time.Ticker
 	var timer <-chan time.Time
 	if p.config.FlushFrequency > 0 {
@@ -298,41 +315,52 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 		timer = ticker.C
 	}
 
-	flushPending := false
+	var buffer []*MessageToSend
+	var flushPending bool
+	var bytesAccumulated int
 
 	flusher := make(chan []*MessageToSend)
 	go p.flusher(broker, flusher)
 
 	for {
-		if len(buffer) == 0 || !flushPending {
-			select {
-			case msg := <-input:
-				if msg == nil {
-					goto shutdown
-				}
-				buffer = append(buffer, msg)
-				if len(buffer) >= p.config.FlushMsgCount {
-					flushPending = true
-				}
-			case <-timer:
+		if bytesAccumulated >= forceFlushThreshold() {
+			flusher <- buffer
+			buffer = nil
+			flushPending = false
+			bytesAccumulated = 0
+			continue
+		}
+
+		var doFlush chan []*MessageToSend
+		if len(buffer) > 0 && flushPending {
+			// otherwise doFlush is left nil, so its case is unevaluated in the select block
+			doFlush = flusher
+		}
+
+		select {
+		case msg := <-input:
+			if msg == nil {
+				goto shutdown
+			}
+
+			buffer = append(buffer, msg)
+			if msg.Key != nil {
+				bytesAccumulated += msg.Key.Length()
+			}
+			if msg.Value != nil {
+				bytesAccumulated += msg.Value.Length()
+			}
+
+			if len(buffer) >= p.config.FlushMsgCount ||
+				(p.config.FlushByteCount > 0 && bytesAccumulated >= p.config.FlushByteCount) {
 				flushPending = true
 			}
-		} else {
-			select {
-			case msg := <-input:
-				if msg == nil {
-					goto shutdown
-				}
-				buffer = append(buffer, msg)
-				if len(buffer) >= p.config.FlushMsgCount {
-					flushPending = true
-				}
-			case <-timer:
-				flushPending = true
-			case flusher <- buffer:
-				buffer = nil
-				flushPending = false
-			}
+		case <-timer:
+			flushPending = true
+		case doFlush <- buffer:
+			buffer = nil
+			flushPending = false
+			bytesAccumulated = 0
 		}
 	}
 
