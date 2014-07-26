@@ -316,27 +316,13 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 	}
 
 	var buffer []*MessageToSend
-	var flushPending bool
+	var doFlush chan []*MessageToSend
 	var bytesAccumulated int
 
 	flusher := make(chan []*MessageToSend)
 	go p.flusher(broker, flusher)
 
 	for {
-		if bytesAccumulated >= forceFlushThreshold() {
-			flusher <- buffer
-			buffer = nil
-			flushPending = false
-			bytesAccumulated = 0
-			continue
-		}
-
-		var doFlush chan []*MessageToSend
-		if len(buffer) > 0 && flushPending {
-			// otherwise doFlush is left nil, so its case is unevaluated in the select block
-			doFlush = flusher
-		}
-
 		select {
 		case msg := <-input:
 			if msg == nil {
@@ -351,15 +337,20 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 				bytesAccumulated += msg.Value.Length()
 			}
 
-			if len(buffer) >= p.config.FlushMsgCount ||
+			if bytesAccumulated >= forceFlushThreshold() {
+				flusher <- buffer
+				buffer = nil
+				doFlush = nil
+				bytesAccumulated = 0
+			} else if len(buffer) >= p.config.FlushMsgCount ||
 				(p.config.FlushByteCount > 0 && bytesAccumulated >= p.config.FlushByteCount) {
-				flushPending = true
+				doFlush = flusher
 			}
 		case <-timer:
-			flushPending = true
+			doFlush = flusher
 		case doFlush <- buffer:
 			buffer = nil
-			flushPending = false
+			doFlush = nil
 			bytesAccumulated = 0
 		}
 	}
