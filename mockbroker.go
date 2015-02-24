@@ -6,12 +6,14 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"time"
 )
 
 // TestState is a generic interface for a test state, implemented e.g. by testing.T
 type TestState interface {
 	Error(args ...interface{})
 	Fatal(args ...interface{})
+	Errorf(format string, args ...interface{})
 	Fatalf(format string, args ...interface{})
 }
 
@@ -32,7 +34,11 @@ type MockBroker struct {
 	expectations chan encoder
 	listener     net.Listener
 	t            TestState
-	expecting    encoder
+	latency      time.Duration
+}
+
+func (b *MockBroker) SetLatency(latency time.Duration) {
+	b.latency = latency
 }
 
 func (b *MockBroker) BrokerID() int32 {
@@ -47,15 +53,9 @@ func (b *MockBroker) Addr() string {
 	return b.listener.Addr().String()
 }
 
-type rawExpectation []byte
-
-func (r rawExpectation) ResponseBytes() []byte {
-	return r
-}
-
 func (b *MockBroker) Close() {
-	if b.expecting != nil {
-		b.t.Fatalf("Not all expectations were satisfied in mockBroker with ID=%d! Still waiting on %#v", b.BrokerID(), b.expecting)
+	if len(b.expectations) > 0 {
+		b.t.Errorf("Not all expectations were satisfied in mockBroker with ID=%d! Still waiting on %d", b.BrokerID(), len(b.expectations))
 	}
 	close(b.expectations)
 	<-b.stopper
@@ -74,9 +74,7 @@ func (b *MockBroker) serverLoop() (ok bool) {
 	reqHeader := make([]byte, 4)
 	resHeader := make([]byte, 8)
 	for expectation := range b.expectations {
-		b.expecting = expectation
 		_, err = io.ReadFull(conn, reqHeader)
-		b.expecting = nil
 		if err != nil {
 			return b.serverError(err, conn)
 		}
@@ -86,6 +84,10 @@ func (b *MockBroker) serverLoop() (ok bool) {
 		}
 		if _, err = io.ReadFull(conn, body); err != nil {
 			return b.serverError(err, conn)
+		}
+
+		if b.latency > 0 {
+			time.Sleep(b.latency)
 		}
 
 		response, err := encode(expectation)
@@ -118,9 +120,13 @@ func (b *MockBroker) serverLoop() (ok bool) {
 func (b *MockBroker) serverError(err error, conn net.Conn) bool {
 	b.t.Error(err)
 	if conn != nil {
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			b.t.Error(err)
+		}
 	}
-	b.listener.Close()
+	if err := b.listener.Close(); err != nil {
+		b.t.Error(err)
+	}
 	return false
 }
 
@@ -128,6 +134,12 @@ func (b *MockBroker) serverError(err error, conn net.Conn) bool {
 // test framework and a channel of responses to use.  If an error occurs it is
 // simply logged to the TestState and the broker exits.
 func NewMockBroker(t TestState, brokerID int32) *MockBroker {
+	return NewMockBrokerAddr(t, brokerID, "localhost:0")
+}
+
+// NewMockBrokerAddr behaves like NewMockBroker but listens on the address you give
+// it rather than just some ephemeral port.
+func NewMockBrokerAddr(t TestState, brokerID int32, addr string) *MockBroker {
 	var err error
 
 	broker := &MockBroker{
@@ -137,7 +149,7 @@ func NewMockBroker(t TestState, brokerID int32) *MockBroker {
 		expectations: make(chan encoder, 512),
 	}
 
-	broker.listener, err = net.Listen("tcp", "localhost:0")
+	broker.listener, err = net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
