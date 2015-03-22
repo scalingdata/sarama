@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"fmt"
 	"io"
 	"net"
@@ -106,6 +107,7 @@ func (b *Broker) Open(conf *BrokerConfig) error {
 
 		b.conn, b.connErr = net.DialTimeout("tcp", b.addr, conf.DialTimeout)
 		if b.connErr != nil {
+			b.connErr = errors.New(b.connErr)
 			b.conn = nil
 			Logger.Printf("Failed to connect to broker %s: %s\n", b.addr, b.connErr)
 			return
@@ -136,7 +138,7 @@ func (b *Broker) Close() (err error) {
 	defer b.lock.Unlock()
 
 	if b.conn == nil {
-		return NotConnected
+		return errors.New(NotConnected)
 	}
 
 	close(b.responses)
@@ -340,18 +342,18 @@ func (b *Broker) encode(pe packetEncoder) (err error) {
 
 	host, portstr, err := net.SplitHostPort(b.addr)
 	if err != nil {
-		return err
+		return errors.New(err)
 	}
 	port, err := strconv.Atoi(portstr)
 	if err != nil {
-		return err
+		return errors.New(err)
 	}
 
 	pe.putInt32(b.id)
 
 	err = pe.putString(host)
 	if err != nil {
-		return err
+		return errors.New(err)
 	}
 
 	pe.putInt32(int32(port))
@@ -370,7 +372,7 @@ func (b *Broker) responseReceiver() {
 
 		_, err = io.ReadFull(b.conn, header)
 		if err != nil {
-			response.errors <- err
+			response.errors <- errors.New(err)
 			continue
 		}
 
@@ -396,7 +398,7 @@ func (b *Broker) responseReceiver() {
 			// fail with a timeout error. If this happens, our connection is permanently toast since we will no longer
 			// be aligned correctly on the stream (we'll be reading garbage Kafka headers from the middle of data).
 			// Can we/should we fail harder in that case?
-			response.errors <- err
+			response.errors <- errors.New(err)
 			continue
 		}
 
