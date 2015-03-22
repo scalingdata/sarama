@@ -134,13 +134,6 @@ func (b *Broker) Connected() (bool, error) {
 func (b *Broker) Close() (err error) {
 	b.lock.Lock()
 	defer b.lock.Unlock()
-	defer func() {
-		if err == nil {
-			Logger.Printf("Closed connection to broker %s\n", b.addr)
-		} else {
-			Logger.Printf("Failed to close connection to broker %s: %s\n", b.addr, err)
-		}
-	}()
 
 	if b.conn == nil {
 		return NotConnected
@@ -155,6 +148,12 @@ func (b *Broker) Close() (err error) {
 	b.connErr = nil
 	b.done = nil
 	b.responses = nil
+
+	if err == nil {
+		Logger.Printf("Closed connection to broker %s\n", b.addr)
+	} else {
+		Logger.Printf("Failed to close connection to broker %s: %s\n", b.addr, err)
+	}
 
 	return
 }

@@ -138,17 +138,23 @@ func (client *Client) Close() error {
 	defer client.lock.Unlock()
 	Logger.Println("Closing Client")
 
+	var wg sync.WaitGroup
 	for _, broker := range client.brokers {
-		safeAsyncClose(broker)
+		asyncCloseWithAck(broker, &wg)
 	}
+
 	client.brokers = nil
 	client.metadata = nil
 
 	if client.seedBroker != nil {
-		safeAsyncClose(client.seedBroker)
+		asyncCloseWithAck(client.seedBroker, &wg)
 	}
 
 	close(client.closer)
+
+	/* Ensure all brokers have closed before exiting so the caller
+	   knows that all resources have be free'd when we return. */
+	wg.Wait()
 
 	return nil
 }
