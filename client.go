@@ -89,17 +89,28 @@ func (client *Client) Close() error {
 	defer client.lock.Unlock()
 	Logger.Println("Closing Client")
 
+	var wg sync.WaitGroup
 	for _, broker := range client.brokers {
 		myBroker := broker // NB: block-local prevents clobbering
-		go withRecover(func() { myBroker.Close() })
+		wg.Add(1)
+		go func() {
+			withRecover(func() { myBroker.Close() })
+			wg.Done()
+		}()
 	}
 	client.brokers = nil
 	client.leaders = nil
 
 	if client.extraBroker != nil {
-		go withRecover(func() { client.extraBroker.Close() })
+		wg.Add(1)
+		go func() {
+			withRecover(func() { client.extraBroker.Close() })
+			wg.Done()
+		}()
 	}
-
+	/* Ensure all brokers have closed before exitting so the caller
+	   knows that all resources have be free'd when we return. */
+	wg.Wait()
 	return nil
 }
 
