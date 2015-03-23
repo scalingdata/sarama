@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"sort"
 	"sync"
 	"time"
@@ -316,7 +317,7 @@ func (client *Client) refreshMetadata(topics []string, retries int) error {
 		Logger.Printf("Out of available brokers.\n")
 	}
 
-	return OutOfBrokers
+	return errors.New(OutOfBrokers)
 }
 
 func (client *Client) resurrectDeadBrokers() {

@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"fmt"
 	"io"
 	"net"
@@ -101,6 +102,7 @@ func (b *Broker) Open(conf *BrokerConfig) error {
 
 		b.conn, b.connErr = net.DialTimeout("tcp", b.addr, conf.DialTimeout)
 		if b.connErr != nil {
+			b.connErr = errors.New(b.connErr)
 			Logger.Printf("Failed to connect to broker %s\n", b.addr)
 			Logger.Println(b.connErr)
 			return
@@ -131,7 +133,7 @@ func (b *Broker) Close() (err error) {
 	defer b.lock.Unlock()
 
 	if b.conn == nil {
-		return NotConnected
+		return errors.New(NotConnected)
 	}
 
 	close(b.responses)
@@ -147,6 +149,7 @@ func (b *Broker) Close() (err error) {
 	if err == nil {
 		Logger.Printf("Closed connection to broker %s\n", b.addr)
 	} else {
+		err = errors.New(err)
 		Logger.Printf("Failed to close connection to broker %s.\n", b.addr)
 		Logger.Println(err)
 	}
@@ -259,25 +262,25 @@ func (b *Broker) send(clientID string, req requestEncoder, promiseResponse bool)
 
 	if b.conn == nil {
 		if b.connErr != nil {
-			return nil, b.connErr
+			return nil, errors.New(b.connErr)
 		}
-		return nil, NotConnected
+		return nil, errors.New(NotConnected)
 	}
 
 	fullRequest := request{b.correlationID, clientID, req}
 	buf, err := encode(&fullRequest)
 	if err != nil {
-		return nil, err
+		return nil, errors.New(err)
 	}
 
 	err = b.conn.SetWriteDeadline(time.Now().Add(b.conf.WriteTimeout))
 	if err != nil {
-		return nil, err
+		return nil, errors.New(err)
 	}
 
 	_, err = b.conn.Write(buf)
 	if err != nil {
-		return nil, err
+		return nil, errors.New(err)
 	}
 	b.correlationID++
 
@@ -359,28 +362,28 @@ func (b *Broker) responseReceiver() {
 	for response := range b.responses {
 		err := b.conn.SetReadDeadline(time.Now().Add(b.conf.ReadTimeout))
 		if err != nil {
-			response.errors <- err
+			response.errors <- errors.New(err)
 			continue
 		}
 
 		_, err = io.ReadFull(b.conn, header)
 		if err != nil {
-			response.errors <- err
+			response.errors <- errors.New(err)
 			continue
 		}
 
 		decodedHeader := responseHeader{}
 		err = decode(header, &decodedHeader)
 		if err != nil {
-			response.errors <- err
+			response.errors <- errors.New(err)
 			continue
 		}
 		if decodedHeader.correlationID != response.correlationID {
 			// TODO if decoded ID < cur ID, discard until we catch up
 			// TODO if decoded ID > cur ID, save it so when cur ID catches up we have a response
-			response.errors <- DecodingError{
+			response.errors <- errors.New(DecodingError{
 				Info: fmt.Sprintf("CorrelationID didn't match, wanted %d, got %d", response.correlationID, decodedHeader.correlationID),
-			}
+			})
 			continue
 		}
 
@@ -391,7 +394,7 @@ func (b *Broker) responseReceiver() {
 			// fail with a timeout error. If this happens, our connection is permanently toast since we will no longer
 			// be aligned correctly on the stream (we'll be reading garbage Kafka headers from the middle of data).
 			// Can we/should we fail harder in that case?
-			response.errors <- err
+			response.errors <- errors.New(err)
 			continue
 		}
 
