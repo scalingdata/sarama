@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"bytes"
 	"compress/gzip"
 	"io/ioutil"
@@ -68,7 +69,7 @@ func (m *Message) encode(pe packetEncoder) error {
 			m.compressedCache = tmp
 			payload = m.compressedCache
 		default:
-			return EncodingError
+			return errors.New(EncodingError)
 		}
 	}
 
@@ -122,7 +123,7 @@ func (m *Message) decode(pd packetDecoder) (err error) {
 			return err
 		}
 		if m.Value, err = ioutil.ReadAll(reader); err != nil {
-			return err
+			return errors.New(err)
 		}
 		return m.decodeSet()
 	case CompressionSnappy:
@@ -130,7 +131,7 @@ func (m *Message) decode(pd packetDecoder) (err error) {
 			return DecodingError{Info: "Snappy compression specified, but no data to uncompress"}
 		}
 		if m.Value, err = SnappyDecode(m.Value); err != nil {
-			return err
+			return errors.New(err)
 		}
 		return m.decodeSet()
 	default:
@@ -139,7 +140,7 @@ func (m *Message) decode(pd packetDecoder) (err error) {
 
 	err = pd.pop()
 	if err != nil {
-		return err
+		return errors.New(err)
 	}
 
 	return nil

@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"log"
 	"time"
 )
@@ -38,7 +39,7 @@ func (msg *produceMessage) enqueue(p *Producer) error {
 
 func (msg *produceMessage) reenqueue(p *Producer) error {
 	if msg.retried {
-		return DroppedMessagesError{}
+		return errors.New(DroppedMessagesError{})
 	}
 	msg.retried = true
 	return msg.enqueue(p)
