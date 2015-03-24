@@ -1,6 +1,9 @@
 package sarama
 
-import "sort"
+import (
+  "sort"
+  "sync"
+)
 
 type none struct{}
 
@@ -49,6 +52,19 @@ func safeAsyncClose(b *Broker) {
 			Logger.Println("Error closing broker", tmp.ID(), ":", err)
 		}
 	})
+}
+
+func asyncCloseWithAck(b *Broker, wg *sync.WaitGroup) {
+	tmp := b // local var prevents clobbering in goroutine
+	wg.Add(1)
+	go func () {
+		withRecover(func() {
+			if err := tmp.Close(); err != nil {
+				Logger.Println("Error closing broker", tmp.ID(), ":", err)
+			}
+		})
+		wg.Done()
+	}()
 }
 
 // Encoder is a simple interface for any type that can be encoded as an array of bytes
