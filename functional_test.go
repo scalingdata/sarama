@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"fmt"
 	"net"
 	"os"
@@ -48,6 +49,10 @@ func TestFuncConnectionFailure(t *testing.T) {
 	config.MetadataRetries = 1
 
 	_, err := NewClient("test", []string{"localhost:9000"}, config)
+	errWithTrace, hasTrace := err.(*errors.Error)
+	if hasTrace {
+		err = errWithTrace.Err
+	}
 	if err != OutOfBrokers {
 		t.Fatal("Expected returned error to be OutOfBrokers, but was: ", err)
 	}

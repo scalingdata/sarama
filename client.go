@@ -1,6 +1,7 @@
 package sarama
 
 import (
+	"github.com/scalingdata/errors"
 	"sort"
 	"sync"
 	"time"
@@ -573,7 +574,7 @@ func (client *Client) refreshMetadata(topics []string, retriesRemaining int) err
 		return client.refreshMetadata(topics, retriesRemaining-1)
 	}
 
-	return OutOfBrokers
+	return errors.New(OutOfBrokers)
 }
 
 // if no fatal error, returns a list of topics that need retrying due to LeaderNotAvailable
