@@ -170,6 +170,8 @@ type MessageToSend struct {
 	Value    Encoder     // The actual message to store in Kafka. It must implement the Encoder interface. Pre-existing Encoders include StringEncoder and ByteEncoder.
 	Metadata interface{} // This field is used to hold arbitrary data you wish to include so it will be available when receiving on the Successes and Errors channels.  Sarama completely ignores this field and is only to be used for pass-through data.
 
+	History map[string]time.Time // Extra data about being enqueued and dequeued
+
 	// these are filled in by the producer as the message is processed
 	offset    int64
 	partition int32
@@ -287,6 +289,8 @@ func (p *Producer) topicDispatcher() {
 			continue
 		}
 
+		msg.History["topicDispatcherEnter"] = time.Now()
+
 		if msg.flags&shutdown != 0 {
 			Logger.Println("Producer shutting down.")
 			break
@@ -309,7 +313,9 @@ func (p *Producer) topicDispatcher() {
 			handlers[msg.Topic] = handler
 		}
 
+		msg.History["topicDispatcherSend"] = time.Now()
 		handler <- msg
+		msg.History["topicDispatcherLeave"] = time.Now()
 	}
 
 	for _, handler := range handlers {
@@ -333,6 +339,7 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 	partitioner := p.config.Partitioner()
 
 	for msg := range input {
+		msg.History["partitionDispatcherEnter-"+msg.partition] = time.Now()
 		if msg.retries == 0 {
 			err := p.assignPartition(partitioner, msg)
 			if err != nil {
@@ -352,7 +359,9 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 			handlers[msg.partition] = handler
 		}
 
+		msg.History["partitionDispatcherSend-"+msg.partiton] = time.Now()
 		handler <- msg
+		msg.History["partitionDispatcherLeave-"msg.partition] = time.Now()
 	}
 
 	for _, handler := range handlers {
@@ -400,13 +409,16 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 	}, p.config.MaxRetries+1)
 
 	for msg := range input {
+		msg.History["leaderDispatcherLeave-"msg.partition] = time.Now()
 		if msg.retries > highWatermark {
 			// new, higher, retry level; send off a chaser so that we know when everything "in between" has made it
 			// back to us and we can safely flush the backlog (otherwise we risk re-ordering messages)
 			highWatermark = msg.retries
 			Logger.Printf("producer/leader state change to [retrying-%d] on %s/%d\n", highWatermark, topic, partition)
 			retryState[msg.retries].expectChaser = true
+			msg.History["leaderDispatcherSend-"msg.partition] = time.Now()
 			output <- &MessageToSend{Topic: topic, partition: partition, flags: chaser, retries: msg.retries - 1}
+			msg.History["leaderDispatcherLeave-"msg.partition] = time.Now()
 			Logger.Printf("producer/leader abandoning broker %d on %s/%d\n", leader.ID(), topic, partition)
 			p.unrefBrokerWorker(leader)
 			output = nil
@@ -414,16 +426,19 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 		} else if highWatermark > 0 {
 			// we are retrying something (else highWatermark would be 0) but this message is not a *new* retry level
 			if msg.retries < highWatermark {
+				msg.History["leaderDispatcherLessThan-"msg.partition] = time.Now()
 				// in fact this message is not even the current retry level, so buffer it for now (unless it's a just a chaser)
 				if msg.flags&chaser == chaser {
 					retryState[msg.retries].expectChaser = false
 				} else {
 					retryState[msg.retries].buf = append(retryState[msg.retries].buf, msg)
 				}
+				msg.History["leaderDispatcherLessThanEnd-"msg.partition] = time.Now()
 				continue
 			} else if msg.flags&chaser == chaser {
 				// this message is of the current retry level (msg.retries == highWatermark) and the chaser flag is set,
 				// meaning this retry level is done and we can go down (at least) one level and flush that
+				msg.History["leaderDispatcherEqual-"msg.partition] = time.Now()
 				retryState[highWatermark].expectChaser = false
 				Logger.Printf("producer/leader state change to [normal-%d] on %s/%d\n", highWatermark, topic, partition)
 				for {
@@ -439,7 +454,9 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 					}
 
 					for _, msg := range retryState[highWatermark].buf {
+						msg.History["leaderDispatcherEqualSend-"msg.partition] = time.Now()
 						output <- msg
+						msg.History["leaderDispatcherEqualSent-"msg.partition] = time.Now()
 					}
 
 				flushDone:
@@ -455,6 +472,7 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 					}
 
 				}
+				msg.History["leaderDispatcherEqualEnd-"msg.partition] = time.Now()
 				continue
 			}
 		}
@@ -462,6 +480,7 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 		// if we made it this far then the current msg contains real data, and can be sent to the next goroutine
 		// without breaking any of our ordering guarantees
 
+		msg.History["leaderDispatcherFallthrough-"msg.partition] = time.Now()
 		if output == nil {
 			if err := breaker.Run(doUpdate); err != nil {
 				p.returnError(msg, err)
@@ -471,11 +490,15 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 			Logger.Printf("producer/leader selected broker %d on %s/%d\n", leader.ID(), topic, partition)
 		}
 
+		msg.History["leaderDispatcherFallthroughSend-"msg.partition] = time.Now()
 		output <- msg
+		msg.History["leaderDispatcherFallthroughSent-"msg.partition] = time.Now()
 	}
 
 	p.unrefBrokerWorker(leader)
+	msg.History["leaderDispatcherRetrySend-"msg.partition] = time.Now()
 	p.retries <- &MessageToSend{flags: unref}
+	msg.History["leaderDispatcherRetrySent-"msg.partition] = time.Now()
 }
 
 // one per broker
@@ -499,6 +522,7 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 	for {
 		select {
 		case msg := <-input:
+			msg.History["aggregatorStart-"msg.partition] = time.Now()
 			if msg == nil {
 				goto shutdown
 			}
@@ -507,7 +531,13 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 				(p.config.Compression != CompressionNone && bytesAccumulated+msg.byteSize() >= p.config.MaxMessageBytes) ||
 				(p.config.MaxMessagesPerReq > 0 && len(buffer) >= p.config.MaxMessagesPerReq) {
 				Logger.Println("producer/aggregator maximum request accumulated, forcing blocking flush")
+				for _, m := range(buffer) {
+					m.History["aggregatorSend-"m.partition] = time.Now()
+				}
 				flusher <- buffer
+				for _, m := range(buffer) {
+					m.History["aggregatorSent-"m.partition] = time.Now()
+				}
 				buffer = nil
 				doFlush = nil
 				bytesAccumulated = 0
@@ -555,6 +585,7 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 		// group messages by topic/partition
 		msgSets := make(map[string]map[int32][]*MessageToSend)
 		for i, msg := range batch {
+			msg.History["flusherStart-"msg.partition] = time.Now()
 			if currentRetries[msg.Topic] != nil && currentRetries[msg.Topic][msg.partition] != nil {
 				if msg.flags&chaser == chaser {
 					// we can start processing this topic/partition again
@@ -580,8 +611,13 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 		if request == nil {
 			continue
 		}
-
+		for _, m := range(batch) {
+			msg.History["flusherSend-"msg.partition] = time.Now()
+		}
 		response, err := broker.Produce(p.client.id, request)
+		for _, m := range(batch) {
+			msg.History["flusherSent-"msg.partition] = time.Now()
+		}
 
 		switch err {
 		case nil:
