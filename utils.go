@@ -1,8 +1,9 @@
 package sarama
 
 import (
-  "sort"
-  "sync"
+	"bufio"
+	"net"
+	"sort"
 )
 
 type none struct{}
@@ -48,8 +49,10 @@ func withRecover(fn func()) {
 func safeAsyncClose(b *Broker) {
 	tmp := b // local var prevents clobbering in goroutine
 	go withRecover(func() {
-		if err := tmp.Close(); err != nil {
-			Logger.Println("Error closing broker", tmp.ID(), ":", err)
+		if connected, _ := tmp.Connected(); connected {
+			if err := tmp.Close(); err != nil {
+				Logger.Println("Error closing broker", tmp.ID(), ":", err)
+			}
 		}
 	})
 }
@@ -57,7 +60,7 @@ func safeAsyncClose(b *Broker) {
 func asyncCloseWithAck(b *Broker, wg *sync.WaitGroup) {
 	tmp := b // local var prevents clobbering in goroutine
 	wg.Add(1)
-	go func () {
+	go func() {
 		withRecover(func() {
 			if err := tmp.Close(); err != nil {
 				Logger.Println("Error closing broker", tmp.ID(), ":", err)
@@ -78,8 +81,8 @@ type Encoder interface {
 // make strings and byte slices encodable for convenience so they can be used as keys
 // and/or values in kafka messages
 
-// StringEncoder implements the Encoder interface for Go strings so that you can do things like
-//	producer.SendMessage(nil, sarama.StringEncoder("hello world"))
+// StringEncoder implements the Encoder interface for Go strings so that they can be used
+// as the Key or Value in a ProducerMessage.
 type StringEncoder string
 
 func (s StringEncoder) Encode() ([]byte, error) {
@@ -90,8 +93,8 @@ func (s StringEncoder) Length() int {
 	return len(s)
 }
 
-// ByteEncoder implements the Encoder interface for Go byte slices so that you can do things like
-//	producer.SendMessage(nil, sarama.ByteEncoder([]byte{0x00}))
+// ByteEncoder implements the Encoder interface for Go byte slices so that they can be used
+// as the Key or Value in a ProducerMessage.
 type ByteEncoder []byte
 
 func (b ByteEncoder) Encode() ([]byte, error) {
@@ -100,4 +103,22 @@ func (b ByteEncoder) Encode() ([]byte, error) {
 
 func (b ByteEncoder) Length() int {
 	return len(b)
+}
+
+// bufConn wraps a net.Conn with a buffer for reads to reduce the number of
+// reads that trigger syscalls.
+type bufConn struct {
+	net.Conn
+	buf *bufio.Reader
+}
+
+func newBufConn(conn net.Conn) *bufConn {
+	return &bufConn{
+		Conn: conn,
+		buf:  bufio.NewReader(conn),
+	}
+}
+
+func (bc *bufConn) Read(b []byte) (n int, err error) {
+	return bc.buf.Read(b)
 }

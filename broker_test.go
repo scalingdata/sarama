@@ -5,23 +5,25 @@ import (
 	"testing"
 )
 
-func ExampleBroker() error {
+func ExampleBroker() {
 	broker := NewBroker("localhost:9092")
 	err := broker.Open(nil)
 	if err != nil {
-		return err
+		panic(err)
 	}
-	defer broker.Close()
 
 	request := MetadataRequest{Topics: []string{"myTopic"}}
-	response, err := broker.GetMetadata("myClient", &request)
+	response, err := broker.GetMetadata(&request)
 	if err != nil {
-		return err
+		_ = broker.Close()
+		panic(err)
 	}
 
 	fmt.Println("There are", len(response.Topics), "topics active in the cluster.")
 
-	return nil
+	if err = broker.Close(); err != nil {
+		panic(err)
+	}
 }
 
 type mockEncoder struct {
@@ -29,8 +31,7 @@ type mockEncoder struct {
 }
 
 func (m mockEncoder) encode(pe packetEncoder) error {
-	pe.putRawBytes(m.bytes)
-	return nil
+	return pe.putRawBytes(m.bytes)
 }
 
 func TestBrokerAccessors(t *testing.T) {
@@ -51,7 +52,7 @@ func TestBrokerAccessors(t *testing.T) {
 }
 
 func TestSimpleBrokerCommunication(t *testing.T) {
-	mb := NewMockBroker(t, 0)
+	mb := newMockBroker(t, 0)
 	defer mb.Close()
 
 	broker := NewBroker(mb.Addr())
@@ -81,7 +82,7 @@ var brokerTestTable = []struct {
 	{[]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 		func(t *testing.T, broker *Broker) {
 			request := MetadataRequest{}
-			response, err := broker.GetMetadata("clientID", &request)
+			response, err := broker.GetMetadata(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -93,7 +94,7 @@ var brokerTestTable = []struct {
 	{[]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 't', 0x00, 0x00, 0x00, 0x00},
 		func(t *testing.T, broker *Broker) {
 			request := ConsumerMetadataRequest{}
-			response, err := broker.GetConsumerMetadata("clientID", &request)
+			response, err := broker.GetConsumerMetadata(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -106,7 +107,7 @@ var brokerTestTable = []struct {
 		func(t *testing.T, broker *Broker) {
 			request := ProduceRequest{}
 			request.RequiredAcks = NoResponse
-			response, err := broker.Produce("clientID", &request)
+			response, err := broker.Produce(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -119,7 +120,7 @@ var brokerTestTable = []struct {
 		func(t *testing.T, broker *Broker) {
 			request := ProduceRequest{}
 			request.RequiredAcks = WaitForLocal
-			response, err := broker.Produce("clientID", &request)
+			response, err := broker.Produce(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -131,7 +132,7 @@ var brokerTestTable = []struct {
 	{[]byte{0x00, 0x00, 0x00, 0x00},
 		func(t *testing.T, broker *Broker) {
 			request := FetchRequest{}
-			response, err := broker.Fetch("clientID", &request)
+			response, err := broker.Fetch(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -143,7 +144,7 @@ var brokerTestTable = []struct {
 	{[]byte{0x00, 0x00, 0x00, 0x00},
 		func(t *testing.T, broker *Broker) {
 			request := OffsetFetchRequest{}
-			response, err := broker.FetchOffset("clientID", &request)
+			response, err := broker.FetchOffset(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -155,7 +156,7 @@ var brokerTestTable = []struct {
 	{[]byte{0x00, 0x00, 0x00, 0x00},
 		func(t *testing.T, broker *Broker) {
 			request := OffsetCommitRequest{}
-			response, err := broker.CommitOffset("clientID", &request)
+			response, err := broker.CommitOffset(&request)
 			if err != nil {
 				t.Error(err)
 			}
@@ -167,12 +168,84 @@ var brokerTestTable = []struct {
 	{[]byte{0x00, 0x00, 0x00, 0x00},
 		func(t *testing.T, broker *Broker) {
 			request := OffsetRequest{}
-			response, err := broker.GetAvailableOffsets("clientID", &request)
+			response, err := broker.GetAvailableOffsets(&request)
 			if err != nil {
 				t.Error(err)
 			}
 			if response == nil {
 				t.Error("Offset request got no response!")
+			}
+		}},
+
+	{[]byte{0x00, 0x17, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		func(t *testing.T, broker *Broker) {
+			request := JoinGroupRequest{}
+			response, err := broker.JoinGroup(&request)
+			if err != nil {
+				t.Error(err)
+			}
+			if response == nil {
+				t.Error("JoinGroup request got no response!")
+			}
+		}},
+
+	{[]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		func(t *testing.T, broker *Broker) {
+			request := SyncGroupRequest{}
+			response, err := broker.SyncGroup(&request)
+			if err != nil {
+				t.Error(err)
+			}
+			if response == nil {
+				t.Error("SyncGroup request got no response!")
+			}
+		}},
+
+	{[]byte{0x00, 0x00},
+		func(t *testing.T, broker *Broker) {
+			request := LeaveGroupRequest{}
+			response, err := broker.LeaveGroup(&request)
+			if err != nil {
+				t.Error(err)
+			}
+			if response == nil {
+				t.Error("LeaveGroup request got no response!")
+			}
+		}},
+
+	{[]byte{0x00, 0x00},
+		func(t *testing.T, broker *Broker) {
+			request := HeartbeatRequest{}
+			response, err := broker.Heartbeat(&request)
+			if err != nil {
+				t.Error(err)
+			}
+			if response == nil {
+				t.Error("Heartbeat request got no response!")
+			}
+		}},
+
+	{[]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+		func(t *testing.T, broker *Broker) {
+			request := ListGroupsRequest{}
+			response, err := broker.ListGroups(&request)
+			if err != nil {
+				t.Error(err)
+			}
+			if response == nil {
+				t.Error("ListGroups request got no response!")
+			}
+		}},
+
+	{[]byte{0x00, 0x00, 0x00, 0x00},
+		func(t *testing.T, broker *Broker) {
+			request := DescribeGroupsRequest{}
+			response, err := broker.DescribeGroups(&request)
+			if err != nil {
+				t.Error(err)
+			}
+			if response == nil {
+				t.Error("DescribeGroups request got no response!")
 			}
 		}},
 }

@@ -1,25 +1,23 @@
 package sarama
 
-// OffsetTime is used in Offset Requests to ask for all messages before a certain time. Any positive int64
-// value will be interpreted as milliseconds, or use the special constants defined here.
-type OffsetTime int64
-
-const (
-	// LatestOffsets askes for the latest offsets.
-	LatestOffsets OffsetTime = -1
-	// EarliestOffset askes for the earliest available offset. Note that because offsets are pulled in descending order,
-	// asking for the earliest offset will always return you a single element.
-	EarliestOffset OffsetTime = -2
-)
-
 type offsetRequestBlock struct {
-	time       OffsetTime
+	time       int64
 	maxOffsets int32
 }
 
 func (r *offsetRequestBlock) encode(pe packetEncoder) error {
 	pe.putInt64(int64(r.time))
 	pe.putInt32(r.maxOffsets)
+	return nil
+}
+
+func (r *offsetRequestBlock) decode(pd packetDecoder) (err error) {
+	if r.time, err = pd.getInt64(); err != nil {
+		return err
+	}
+	if r.maxOffsets, err = pd.getInt32(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -44,10 +42,47 @@ func (r *OffsetRequest) encode(pe packetEncoder) error {
 		}
 		for partition, block := range partitions {
 			pe.putInt32(partition)
-			err = block.encode(pe)
+			if err = block.encode(pe); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *OffsetRequest) decode(pd packetDecoder) error {
+	// Ignore replica ID
+	if _, err := pd.getInt32(); err != nil {
+		return err
+	}
+	blockCount, err := pd.getArrayLength()
+	if err != nil {
+		return err
+	}
+	if blockCount == 0 {
+		return nil
+	}
+	r.blocks = make(map[string]map[int32]*offsetRequestBlock)
+	for i := 0; i < blockCount; i++ {
+		topic, err := pd.getString()
+		if err != nil {
+			return err
+		}
+		partitionCount, err := pd.getArrayLength()
+		if err != nil {
+			return err
+		}
+		r.blocks[topic] = make(map[int32]*offsetRequestBlock)
+		for j := 0; j < partitionCount; j++ {
+			partition, err := pd.getInt32()
 			if err != nil {
 				return err
 			}
+			block := &offsetRequestBlock{}
+			if err := block.decode(pd); err != nil {
+				return err
+			}
+			r.blocks[topic][partition] = block
 		}
 	}
 	return nil
@@ -61,7 +96,7 @@ func (r *OffsetRequest) version() int16 {
 	return 0
 }
 
-func (r *OffsetRequest) AddBlock(topic string, partitionID int32, time OffsetTime, maxOffsets int32) {
+func (r *OffsetRequest) AddBlock(topic string, partitionID int32, time int64, maxOffsets int32) {
 	if r.blocks == nil {
 		r.blocks = make(map[string]map[int32]*offsetRequestBlock)
 	}
