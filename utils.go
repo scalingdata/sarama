@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"net"
 	"sort"
+	"sync"
 )
 
 type none struct{}
