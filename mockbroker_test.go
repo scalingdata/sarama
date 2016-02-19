@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
+	"github.com/scalingdata/go-spew/spew"
 )
 
 const (
