@@ -3,7 +3,7 @@ package mocks
 import (
 	"testing"
 
-	"github.com/Shopify/sarama"
+	"github.com/scalingdata/sarama"
 )
 
 func TestMockSyncProducerImplementsSyncProducerInterface(t *testing.T) {
