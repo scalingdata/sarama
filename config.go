@@ -51,6 +51,16 @@ type Config struct {
 		// KeepAlive specifies the keep-alive period for an active network connection.
 		// If zero, keep-alives are disabled. (default is 0: disabled).
 		KeepAlive time.Duration
+
+		// Connection backoff settings when a broker is unavailable.
+		// Modeled after gRPC Connection Backoff Protocol:
+		// https://github.com/grpc/grpc/blob/master/doc/connection-backoff.md
+		Backoff struct {
+			Initial    time.Duration // How long to wait after the first failure before retrying
+			Multiplier float64       // Factor with which to multiply backoff after a failed retry
+			Jitter     float64       // Factor to vary connection attempts
+			Max        time.Duration // Maximum amount of time to wait before retry
+		}
 	}
 
 	// Metadata is the namespace for metadata management properties used by the
@@ -252,6 +262,11 @@ func NewConfig() *Config {
 	c.Net.ReadTimeout = 30 * time.Second
 	c.Net.WriteTimeout = 30 * time.Second
 
+	c.Net.Backoff.Initial = 1 * time.Second
+	c.Net.Backoff.Multiplier = 1.6
+	c.Net.Backoff.Jitter = 0.2
+	c.Net.Backoff.Max = 120 * time.Second
+
 	c.Metadata.Retry.Max = 3
 	c.Metadata.Retry.Backoff = 250 * time.Millisecond
 	c.Metadata.RefreshFrequency = 10 * time.Minute
@@ -337,6 +352,16 @@ func (c *Config) Validate() error {
 		return ConfigurationError("Net.SASL.User must not be empty when SASL is enabled")
 	case c.Net.SASL.Enable == true && c.Net.SASL.Password == "":
 		return ConfigurationError("Net.SASL.Password must not be empty when SASL is enabled")
+	case c.Net.Backoff.Initial < 0:
+		return ConfigurationError("Net.Backoff.Initial must be >= 0")
+	case c.Net.Backoff.Multiplier < 0:
+		return ConfigurationError("Net.Backoff.Multiplier must be >= 0")
+	case c.Net.Backoff.Jitter < 0:
+		return ConfigurationError("Net.Backoff.Jitter must be >= 0")
+	case c.Net.Backoff.Max < 0:
+		return ConfigurationError("Net.Backoff.Max must be >= 0")
+	case c.Net.Backoff.Max < c.Net.Backoff.Initial:
+		return ConfigurationError("Net.Backoff.Max must be greater than Net.Backoff.Initial")
 	}
 
 	// validate the Metadata values

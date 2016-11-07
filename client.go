@@ -133,8 +133,13 @@ func NewClient(addrs []string, conf *Config) (Client, error) {
 		client.seedBrokers = append(client.seedBrokers, NewBroker(addrs[index]))
 	}
 
+	isConnected, err := client.waitForSingleConnection()
+	if isConnected == false {
+		return nil, ErrOutOfBrokers
+	}
+
 	// do an initial fetch of all cluster metadata by specifing an empty list of topics
-	err := client.RefreshMetadata()
+	err = client.RefreshMetadata()
 	switch err {
 	case nil:
 		break
@@ -417,13 +422,46 @@ func (client *client) resurrectDeadBrokers() {
 	client.deadSeeds = nil
 }
 
+func (client *client) waitForSingleConnection() (bool, error) {
+	// Attempt to connect to each broker asynchronously. Any returned Open() errors
+	// should be ConfigurationError
+	for _, broker := range client.seedBrokers {
+		err := broker.Open(client.conf)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	// Determine if at least one successfully connected
+	brokerErrs := make(map[int]error)
+	for {
+		for i, broker := range client.seedBrokers {
+			isConnected, err := broker.Connected()
+			if isConnected {
+				return true, nil
+			}
+			if err != nil {
+				brokerErrs[i] = err
+			}
+		}
+		if len(brokerErrs) == len(client.seedBrokers) {
+			break
+		}
+		time.Sleep(time.Millisecond) // avoid a tight loop
+	}
+
+	return false, nil
+}
+
 func (client *client) any() *Broker {
 	client.lock.RLock()
 	defer client.lock.RUnlock()
 
-	if len(client.seedBrokers) > 0 {
-		_ = client.seedBrokers[0].Open(client.conf)
-		return client.seedBrokers[0]
+	for _, broker := range client.seedBrokers {
+		if !broker.Penalized() {
+			_ = broker.Open(client.conf)
+			return broker
+		}
 	}
 
 	// not guaranteed to be random *or* deterministic
@@ -576,6 +614,11 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int)
 			return client.tryRefreshMetadata(topics, attemptsRemaining-1)
 		}
 		return err
+	}
+
+	isConnected, _ := client.waitForSingleConnection()
+	if !isConnected {
+		return ErrOutOfBrokers
 	}
 
 	for broker := client.any(); broker != nil; broker = client.any() {
