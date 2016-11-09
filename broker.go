@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"github.com/scalingdata/errors"
 	"io"
+	"math/rand"
 	"net"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -17,12 +17,13 @@ type Broker struct {
 	id   int32
 	addr string
 
-	conf          *Config
-	correlationID int32
-	conn          net.Conn
-	connErr       error
-	lock          sync.Mutex
-	opened        int32
+	conf           *Config
+	correlationID  int32
+	conn           net.Conn
+	connErr        error
+	retryAfter     time.Time
+	currentBackoff time.Duration
+	lock           sync.Mutex
 
 	responses chan responsePromise
 	done      chan bool
@@ -55,20 +56,21 @@ func (b *Broker) Open(conf *Config) error {
 		return err
 	}
 
-	if !atomic.CompareAndSwapInt32(&b.opened, 0, 1) {
-		return ErrAlreadyConnected
-	}
-
 	b.lock.Lock()
-
-	if b.conn != nil {
-		b.lock.Unlock()
-		Logger.Printf("Failed to connect to broker %s: %s\n", b.addr, ErrAlreadyConnected)
-		return ErrAlreadyConnected
-	}
 
 	go withRecover(func() {
 		defer b.lock.Unlock()
+
+		// Abort the connection attempt if we're connected by the time we obtain the lock
+		if b.conn != nil {
+			return
+		}
+
+		// Abort this connection attempt if sarama has penalized the broker due to
+		// previous failed connection attempts
+		if b.penalized() {
+			return
+		}
 
 		dialer := net.Dialer{
 			Timeout:   conf.Net.DialTimeout,
@@ -83,11 +85,12 @@ func (b *Broker) Open(conf *Config) error {
 		if b.connErr != nil {
 			b.connErr = errors.New(b.connErr)
 			b.conn = nil
-			atomic.StoreInt32(&b.opened, 0)
+			b.advanceBackoff(conf)
 			Logger.Printf("Failed to connect to broker %s: %s\n", b.addr, b.connErr)
 			return
 		}
 		b.conn = newBufConn(b.conn)
+		b.resetBackoff()
 
 		b.conf = conf
 		b.done = make(chan bool)
@@ -113,6 +116,13 @@ func (b *Broker) Connected() (bool, error) {
 	return b.conn != nil, b.connErr
 }
 
+func (b *Broker) Penalized() bool {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	return b.penalized()
+}
+
 func (b *Broker) Close() error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
@@ -130,8 +140,6 @@ func (b *Broker) Close() error {
 	b.connErr = nil
 	b.done = nil
 	b.responses = nil
-
-	atomic.StoreInt32(&b.opened, 0)
 
 	if err == nil {
 		Logger.Printf("Closed connection to broker %s\n", b.addr)
@@ -461,4 +469,52 @@ func (b *Broker) responseReceiver() {
 		response.packets <- buf
 	}
 	close(b.done)
+}
+
+// Determine if the broker is penalized. The broker lock should be held when calling
+// this method
+func (b *Broker) penalized() bool {
+	now := time.Now()
+	if !b.retryAfter.IsZero() && (now.Before(b.retryAfter) || now.Equal(b.retryAfter)) {
+		return true
+	}
+	return false
+}
+
+// Reset backoff to its initial state. The broker lock should be held when calling
+// this method.
+func (b *Broker) resetBackoff() {
+	b.currentBackoff = time.Second
+	var t time.Time
+	b.retryAfter = t
+}
+
+// Advance backoff to its next state. The broker lock should be held when calling
+// this method.
+func (b *Broker) advanceBackoff(conf *Config) {
+	var adj time.Duration
+	if b.currentBackoff < conf.Net.Backoff.Initial {
+		b.currentBackoff = conf.Net.Backoff.Initial
+		adj = conf.Net.Backoff.Initial
+	} else if b.currentBackoff >= conf.Net.Backoff.Max {
+		b.currentBackoff = conf.Net.Backoff.Max
+		adj = conf.Net.Backoff.Max
+	} else {
+		// Calculate the next backoff
+		backoff := int64(float64(b.currentBackoff) * conf.Net.Backoff.Multiplier)
+		if backoff > int64(conf.Net.Backoff.Max) {
+			backoff = int64(conf.Net.Backoff.Max)
+		}
+		maxJitter := int64(float64(backoff) * conf.Net.Backoff.Jitter)
+		jitter := rand.Int63n(maxJitter)
+		if jitter%2 == 0 {
+			jitter = -1 * jitter
+		}
+		adj = time.Duration(backoff + jitter)
+		b.currentBackoff = time.Duration(backoff)
+	}
+
+	Logger.Printf("Waiting %v seconds before attempting reconnect to broker %s", adj, b.addr)
+	now := time.Now()
+	b.retryAfter = now.Add(adj)
 }
