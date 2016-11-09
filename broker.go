@@ -68,8 +68,7 @@ func (b *Broker) Open(conf *Config) error {
 
 		// Abort this connection attempt if sarama has penalized the broker due to
 		// previous failed connection attempts
-		now := time.Now()
-		if !b.retryAfter.IsZero() && (now.Before(b.retryAfter) || now.Equal(b.retryAfter)) {
+		if b.penalized() {
 			return
 		}
 
@@ -115,6 +114,13 @@ func (b *Broker) Connected() (bool, error) {
 	defer b.lock.Unlock()
 
 	return b.conn != nil, b.connErr
+}
+
+func (b *Broker) Penalized() bool {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	return b.penalized()
 }
 
 func (b *Broker) Close() error {
@@ -465,10 +471,9 @@ func (b *Broker) responseReceiver() {
 	close(b.done)
 }
 
-func (b *Broker) Penalized() bool {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-
+// Determine if the broker is penalized. The broker lock should be held when calling
+// this method
+func (b *Broker) penalized() bool {
 	now := time.Now()
 	if !b.retryAfter.IsZero() && (now.Before(b.retryAfter) || now.Equal(b.retryAfter)) {
 		return true
