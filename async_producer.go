@@ -325,6 +325,9 @@ func (tp *topicProducer) partitionMessage(msg *ProducerMessage) error {
 		} else {
 			partitions, err = tp.parent.client.WritablePartitions(msg.Topic)
 		}
+		if (err != nil) {
+			Logger.Printf("Failed to get partition list for topic %v", msg.Topic)
+		}
 		return
 	})
 
@@ -495,10 +498,12 @@ func (pp *partitionProducer) flushRetryBuffers() {
 func (pp *partitionProducer) updateLeader() error {
 	return pp.breaker.Run(func() (err error) {
 		if err = pp.parent.client.RefreshMetadata(pp.topic); err != nil {
+			Logger.Printf("Failed to refresh metadata for partition producer on topic %v - %v", pp.topic, err)
 			return err
 		}
 
 		if pp.leader, err = pp.parent.client.Leader(pp.topic, pp.partition); err != nil {
+			Logger.Printf("Failed to get leader for partition producer on topic %v - %v", pp.topic, err)
 			return err
 		}
 
