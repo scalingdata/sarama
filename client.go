@@ -621,12 +621,6 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int)
 		return err
 	}
 
-        isConnected, _ := client.waitForSingleConnection()
-        if !isConnected {
-                return ErrOutOfBrokers
-        }
-
-
 	for broker := client.any(); broker != nil; broker = client.any() {
 		if len(topics) > 0 {
 			Logger.Printf("client/metadata fetching metadata for %v from broker %s\n", topics, broker.addr)
