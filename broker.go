@@ -56,19 +56,23 @@ func (b *Broker) Open(conf *Config) error {
 		return err
 	}
 
+	Logger.Printf("Acquiring open lock for broker %v", b.addr)
 	b.lock.Lock()
+	Logger.Printf("Acquired open lock for broker %v", b.addr)
 
 	go withRecover(func() {
 		defer b.lock.Unlock()
 
 		// Abort the connection attempt if we're connected by the time we obtain the lock
 		if b.conn != nil {
+			Logger.Printf("Broker is already connected, short-circuited open %v", b.addr)
 			return
 		}
 
 		// Abort this connection attempt if sarama has penalized the broker due to
 		// previous failed connection attempts
 		if b.penalized() {
+			Logger.Printf("Broker is penalized, failed to open %v", b.addr)
 			return
 		}
 

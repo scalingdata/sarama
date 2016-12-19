@@ -429,6 +429,7 @@ func (client *client) resurrectDeadBrokers() {
 func (client *client) waitForSingleConnection() (bool, error) {
 	// Attempt to connect to each broker asynchronously. Any returned Open() errors
 	// should be ConfigurationError
+	Logger.Printf("Number of seed brokers: %v", len(client.seedBrokers))
 	for _, broker := range client.seedBrokers {
 		err := broker.Open(client.conf)
 		if err != nil {
@@ -618,11 +619,6 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int)
 			return client.tryRefreshMetadata(topics, attemptsRemaining-1)
 		}
 		return err
-	}
-
-	isConnected, _ := client.waitForSingleConnection()
-	if !isConnected {
-		return ErrOutOfBrokers
 	}
 
 	for broker := client.any(); broker != nil; broker = client.any() {
